@@ -23,16 +23,22 @@ public class PdfInvoiceParser {
     private static final Logger logger = LoggerFactory.getLogger(PdfInvoiceParser.class);
     
     // 常用的正则表达式模式
-    private static final Pattern INVOICE_NUMBER_PATTERN = Pattern.compile("发票号码[：:]\\s*([0-9]{8,20})");
-    private static final Pattern INVOICE_CODE_PATTERN = Pattern.compile("发票代码[：:]\\s*([0-9]{10,15})");
-    private static final Pattern DATE_PATTERN = Pattern.compile("开票日期[：:]\\s*(\\d{4}年\\d{1,2}月\\d{1,2}日|\\d{4}-\\d{1,2}-\\d{1,2}|\\d{4}/\\d{1,2}/\\d{1,2})");
-    private static final Pattern SELLER_NAME_PATTERN = Pattern.compile("销售方[：:]?\\s*名称[：:]\\s*([^\\n\\r]+)");
-    private static final Pattern SELLER_TAX_PATTERN = Pattern.compile("纳税人识别号[：:]\\s*([A-Z0-9]{15,20})");
-    private static final Pattern BUYER_NAME_PATTERN = Pattern.compile("购买方[：:]?\\s*名称[：:]\\s*([^\\n\\r]+)");
-    private static final Pattern BUYER_TAX_PATTERN = Pattern.compile("购买方.*?纳税人识别号[：:]\\s*([A-Z0-9]{15,20})");
-    private static final Pattern TOTAL_AMOUNT_PATTERN = Pattern.compile("价税合计[：:]?\\s*[¥￥]?\\s*([0-9,]+\\.?[0-9]*)");
-    private static final Pattern TAX_AMOUNT_PATTERN = Pattern.compile("税额[：:]?\\s*[¥￥]?\\s*([0-9,]+\\.?[0-9]*)");
-    private static final Pattern AMOUNT_WITHOUT_TAX_PATTERN = Pattern.compile("不含税金额[：:]?\\s*[¥￥]?\\s*([0-9,]+\\.?[0-9]*)");
+    private static final Pattern INVOICE_NUMBER_PATTERN = Pattern.compile("发票号码[：:\\s]*([0-9]{8,25})");
+    private static final Pattern INVOICE_CODE_PATTERN = Pattern.compile("发票代码[：:\\s]*([0-9]{10,15})");
+    private static final Pattern DATE_PATTERN = Pattern.compile("开票日期[：:\\s]*(\\d{4}年\\d{1,2}月\\d{1,2}日|\\d{4}-\\d{1,2}-\\d{1,2}|\\d{4}/\\d{1,2}/\\d{1,2})");
+    
+    // 改进的销售方和购买方信息匹配模式（基于实际文本格式）
+    private static final Pattern SELLER_NAME_PATTERN = Pattern.compile("名称[：：]([^\\n\\r]+?)\\n统一社会信用代码/纳税人识别号[：：]([A-Z0-9]{15,20})\\n名称[：：]");
+    private static final Pattern SELLER_TAX_PATTERN = Pattern.compile("名称[：：]([^\\n\\r]+?)\\n统一社会信用代码/纳税人识别号[：：]([A-Z0-9]{15,20})");
+    
+    // 购买方信息（第二个出现的名称和税号）
+    private static final Pattern BUYER_NAME_PATTERN = Pattern.compile("统一社会信用代码/纳税人识别号[：：][A-Z0-9]{15,20}\\n名称[：：]([^\\n\\r]+?)\\n统一社会信用代码/纳税人识别号[：：]([A-Z0-9]{15,20})");
+    private static final Pattern BUYER_TAX_PATTERN = Pattern.compile("名称[：：][^\\n\\r]+?\\n统一社会信用代码/纳税人识别号[：：][A-Z0-9]{15,20}\\n名称[：：][^\\n\\r]+?\\n统一社会信用代码/纳税人识别号[：：]([A-Z0-9]{15,20})");
+    
+    // 改进的金额匹配模式
+    private static final Pattern TOTAL_AMOUNT_PATTERN = Pattern.compile("价\\s*税\\s*合\\s*计[\\s\\S]*?[（\\(]\\s*小\\s*写\\s*[）\\)][\\s]*([0-9,]+\\.?[0-9]*)[¥￥]?");
+    private static final Pattern TAX_AMOUNT_PATTERN = Pattern.compile("合\\s*计[\\s\\S]*?([0-9,]+\\.?[0-9]*)[¥￥][\\s]*([0-9,]+\\.?[0-9]*)[¥￥]");
+    private static final Pattern AMOUNT_WITHOUT_TAX_PATTERN = Pattern.compile("合\\s*计[\\s]*([0-9,]+\\.?[0-9]*)[¥￥]");
     
     /**
      * 解析PDF发票文件
@@ -112,15 +118,19 @@ public class PdfInvoiceParser {
      * 解析销售方信息
      */
     private void parseSellerInfo(String text, InvoiceInfo invoiceInfo) {
-        // 解析销售方名称
-        Matcher nameMatcher = SELLER_NAME_PATTERN.matcher(text);
+        // 使用更直接的方法：查找第一个"名称："和"统一社会信用代码/纳税人识别号："
+        Pattern namePattern = Pattern.compile("名称[：：]([^\\n\\r]+?)\\n");
+        Pattern taxPattern = Pattern.compile("统一社会信用代码/纳税人识别号[：：]([A-Z0-9]{15,20})");
+        
+        Matcher nameMatcher = namePattern.matcher(text);
+        Matcher taxMatcher = taxPattern.matcher(text);
+        
+        // 第一个匹配的是销售方
         if (nameMatcher.find()) {
             invoiceInfo.setSellerName(nameMatcher.group(1).trim());
-            logger.debug("解析到销售方名称: {}", nameMatcher.group(1));
+            logger.debug("解析到销售方名称: {}", nameMatcher.group(1).trim());
         }
         
-        // 解析销售方税号
-        Matcher taxMatcher = SELLER_TAX_PATTERN.matcher(text);
         if (taxMatcher.find()) {
             invoiceInfo.setSellerTaxNumber(taxMatcher.group(1));
             logger.debug("解析到销售方税号: {}", taxMatcher.group(1));
@@ -131,16 +141,20 @@ public class PdfInvoiceParser {
      * 解析购买方信息
      */
     private void parseBuyerInfo(String text, InvoiceInfo invoiceInfo) {
-        // 解析购买方名称
-        Matcher nameMatcher = BUYER_NAME_PATTERN.matcher(text);
-        if (nameMatcher.find()) {
+        // 查找所有"名称："和"统一社会信用代码/纳税人识别号："，第二个匹配的是购买方
+        Pattern namePattern = Pattern.compile("名称[：：]([^\\n\\r]+?)\\n");
+        Pattern taxPattern = Pattern.compile("统一社会信用代码/纳税人识别号[：：]([A-Z0-9]{15,20})");
+        
+        Matcher nameMatcher = namePattern.matcher(text);
+        Matcher taxMatcher = taxPattern.matcher(text);
+        
+        // 跳过第一个匹配（销售方），取第二个匹配（购买方）
+        if (nameMatcher.find() && nameMatcher.find()) {
             invoiceInfo.setBuyerName(nameMatcher.group(1).trim());
-            logger.debug("解析到购买方名称: {}", nameMatcher.group(1));
+            logger.debug("解析到购买方名称: {}", nameMatcher.group(1).trim());
         }
         
-        // 解析购买方税号
-        Matcher taxMatcher = BUYER_TAX_PATTERN.matcher(text);
-        if (taxMatcher.find()) {
+        if (taxMatcher.find() && taxMatcher.find()) {
             invoiceInfo.setBuyerTaxNumber(taxMatcher.group(1));
             logger.debug("解析到购买方税号: {}", taxMatcher.group(1));
         }
@@ -150,7 +164,7 @@ public class PdfInvoiceParser {
      * 解析金额信息
      */
     private void parseAmountInfo(String text, InvoiceInfo invoiceInfo) {
-        // 解析价税合计
+        // 解析价税合计 - 从小写金额中提取
         Matcher totalMatcher = TOTAL_AMOUNT_PATTERN.matcher(text);
         if (totalMatcher.find()) {
             String amountStr = totalMatcher.group(1).replace(",", "");
@@ -163,29 +177,39 @@ public class PdfInvoiceParser {
             }
         }
         
-        // 解析税额
+        // 解析合计行的不含税金额和税额
         Matcher taxMatcher = TAX_AMOUNT_PATTERN.matcher(text);
         if (taxMatcher.find()) {
-            String taxStr = taxMatcher.group(1).replace(",", "");
             try {
-                BigDecimal taxAmount = new BigDecimal(taxStr);
+                // 第一个数字是不含税金额，第二个数字是税额
+                String amountWithoutTaxStr = taxMatcher.group(1).replace(",", "");
+                String taxAmountStr = taxMatcher.group(2).replace(",", "");
+                
+                BigDecimal amountWithoutTax = new BigDecimal(amountWithoutTaxStr);
+                BigDecimal taxAmount = new BigDecimal(taxAmountStr);
+                
+                invoiceInfo.setAmountWithoutTax(amountWithoutTax);
                 invoiceInfo.setTaxAmount(taxAmount);
+                
+                logger.debug("解析到不含税金额: {}", amountWithoutTax);
                 logger.debug("解析到税额: {}", taxAmount);
             } catch (NumberFormatException e) {
-                logger.warn("解析税额失败: {}", taxStr);
+                logger.warn("解析合计行金额失败: {}", e.getMessage());
             }
         }
         
-        // 解析不含税金额
-        Matcher amountMatcher = AMOUNT_WITHOUT_TAX_PATTERN.matcher(text);
-        if (amountMatcher.find()) {
-            String amountStr = amountMatcher.group(1).replace(",", "");
-            try {
-                BigDecimal amountWithoutTax = new BigDecimal(amountStr);
-                invoiceInfo.setAmountWithoutTax(amountWithoutTax);
-                logger.debug("解析到不含税金额: {}", amountWithoutTax);
-            } catch (NumberFormatException e) {
-                logger.warn("解析不含税金额失败: {}", amountStr);
+        // 如果上面的方法没有成功，尝试单独解析不含税金额
+        if (invoiceInfo.getAmountWithoutTax() == null) {
+            Matcher amountMatcher = AMOUNT_WITHOUT_TAX_PATTERN.matcher(text);
+            if (amountMatcher.find()) {
+                String amountStr = amountMatcher.group(1).replace(",", "");
+                try {
+                    BigDecimal amountWithoutTax = new BigDecimal(amountStr);
+                    invoiceInfo.setAmountWithoutTax(amountWithoutTax);
+                    logger.debug("解析到不含税金额: {}", amountWithoutTax);
+                } catch (NumberFormatException e) {
+                    logger.warn("解析不含税金额失败: {}", amountStr);
+                }
             }
         }
     }
@@ -203,27 +227,66 @@ public class PdfInvoiceParser {
     }
     
     /**
-     * 解析发票明细项目（简化版本）
+     * 解析发票明细项目
      */
     private void parseInvoiceItems(String text, InvoiceInfo invoiceInfo) {
         List<InvoiceInfo.InvoiceItem> items = new ArrayList<>();
         
-        // 这里是一个简化的解析逻辑，实际项目中可能需要更复杂的表格解析
-        Pattern itemPattern = Pattern.compile("([^\\n\\r]+?)\\s+(\\d+\\.?\\d*)\\s+([^\\s]+)\\s+(\\d+\\.?\\d*)\\s+(\\d+\\.?\\d*)");
+        // 针对这种发票格式的明细解析
+        // 匹配格式: *经纪代理服务*代订住 次 1 720.75 720.75 6% 43.25
+        Pattern itemPattern = Pattern.compile("\\*([^*]+)\\*([^\\n\\r]*?)\\s+(\\S+)\\s+(\\d+(?:\\.\\d+)?)\\s+(\\d+(?:\\.\\d+)?)\\s+(\\d+(?:\\.\\d+)?)\\s+(\\d+(?:\\.\\d+)?%)\\s+(\\d+(?:\\.\\d+)?)");
         Matcher matcher = itemPattern.matcher(text);
         
         while (matcher.find()) {
             InvoiceInfo.InvoiceItem item = new InvoiceInfo.InvoiceItem();
             try {
-                item.setItemName(matcher.group(1).trim());
-                item.setQuantity(new BigDecimal(matcher.group(2)));
+                String itemName = matcher.group(1).trim() + matcher.group(2).trim();
+                item.setItemName(itemName);
                 item.setUnit(matcher.group(3));
-                item.setUnitPrice(new BigDecimal(matcher.group(4)));
-                item.setAmount(new BigDecimal(matcher.group(5)));
+                item.setQuantity(new BigDecimal(matcher.group(4)));
+                item.setUnitPrice(new BigDecimal(matcher.group(5)));
+                item.setAmount(new BigDecimal(matcher.group(6)));
+                
+                // 解析税率（去掉%符号）
+                String taxRateStr = matcher.group(7).replace("%", "");
+                BigDecimal taxRate = new BigDecimal(taxRateStr).divide(BigDecimal.valueOf(100));
+                item.setTaxRate(taxRate);
+                
+                item.setTaxAmount(new BigDecimal(matcher.group(8)));
+                
                 items.add(item);
                 logger.debug("解析到发票项目: {}", item);
             } catch (NumberFormatException e) {
                 logger.warn("解析发票项目时出错: {}", e.getMessage());
+            }
+        }
+        
+        // 如果上面的模式没有匹配到，尝试更通用的模式
+        if (items.isEmpty()) {
+            // 尝试更宽松的匹配模式
+            Pattern generalPattern = Pattern.compile("([^\\n\\r]+?)\\s+(\\S+)\\s+(\\d+(?:\\.\\d+)?)\\s+(\\d+(?:\\.\\d+)?)\\s+(\\d+(?:\\.\\d+)?)\\s+(\\d+(?:\\.\\d+)?%)\\s+(\\d+(?:\\.\\d+)?)");
+            Matcher generalMatcher = generalPattern.matcher(text);
+            
+            while (generalMatcher.find()) {
+                InvoiceInfo.InvoiceItem item = new InvoiceInfo.InvoiceItem();
+                try {
+                    item.setItemName(generalMatcher.group(1).trim());
+                    item.setUnit(generalMatcher.group(2));
+                    item.setQuantity(new BigDecimal(generalMatcher.group(3)));
+                    item.setUnitPrice(new BigDecimal(generalMatcher.group(4)));
+                    item.setAmount(new BigDecimal(generalMatcher.group(5)));
+                    
+                    String taxRateStr = generalMatcher.group(6).replace("%", "");
+                    BigDecimal taxRate = new BigDecimal(taxRateStr).divide(BigDecimal.valueOf(100));
+                    item.setTaxRate(taxRate);
+                    
+                    item.setTaxAmount(new BigDecimal(generalMatcher.group(7)));
+                    
+                    items.add(item);
+                    logger.debug("解析到发票项目（通用模式）: {}", item);
+                } catch (NumberFormatException e) {
+                    logger.warn("解析发票项目时出错（通用模式）: {}", e.getMessage());
+                }
             }
         }
         

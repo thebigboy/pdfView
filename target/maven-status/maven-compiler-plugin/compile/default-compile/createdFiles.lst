@@ -1,6 +1,8 @@
+com/invoice/ImprovedParserTest.class
 com/invoice/PdfInvoiceParser.class
-com/invoice/InvoiceParserMain.class
 com/invoice/InvoiceJsonUtil.class
 com/invoice/InvoiceInfo$InvoiceItem.class
+com/invoice/InvoiceParserMain.class
 com/invoice/InvoiceInfo.class
 com/invoice/TestRunner.class
+com/invoice/PatternTester.class
